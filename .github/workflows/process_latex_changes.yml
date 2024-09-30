@@ -1,0 +1,81 @@
+name: Process LaTeX Changes
+
+on:
+  repository_dispatch:
+    types: [latex-changes]
+
+permissions:
+  contents: write
+
+jobs:
+  build_latex_to_html:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout blog repo
+        uses: actions/checkout@v4
+
+      - name: Checkout posts repo
+        uses: actions/checkout@v4
+        with:
+          repository: "Fei-Wang/posts"
+          path: posts
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Set changed directories
+        run: echo "CHANGED_DIRS=${{ github.event.client_payload.changed_dirs }}" >> $GITHUB_ENV
+
+      - name: Process changed directories
+        run: |
+          while IFS= read -r dir; do
+            if [[ -n "$dir" ]]; then  
+              # Remove the corresponding HTML directory if it exists
+              html_dir="_posts/$dir"
+              if [ -d "$html_dir" ]; then
+                echo "Removing directory: $html_dir"
+                rm -rf "$html_dir"
+              fi
+
+              # Check if front_matter.yml exists in posts/latex directory for the current changed directory
+              front_matter_file="posts/latex/$dir/front_matter.yml"
+              if [ -f "$front_matter_file" ]; then
+                echo "Found front_matter.yml in $dir, proceeding with LaTeX conversion."
+
+                # Check if main.tex exists
+                tex_file="posts/latex/$dir/main.tex"
+                if [ -f "$tex_file" ]; then
+                  # Construct the destination path
+                  destination="$html_dir/main.html"
+              
+                  # Run docker to convert the .tex file to HTML
+                  echo "Converting $tex_file to $destination"
+                  docker run -v "$(pwd)":/docdir -w /docdir \
+                    --user "$(id -u):$(id -g)" \
+                    latexml/ar5ivist:latest --source="$tex_file" --destination="$destination"
+                else
+                  echo "No main.tex found in $tex_file, skipping conversion."
+                fi
+              else
+                echo "No front_matter.yml found in $dir, skipping directory."
+              fi
+            fi
+          done <<< "${{ env.CHANGED_DIRS }}"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v2
+
+      - name: Process HTML files
+        run: |
+          while IFS= read -r dir; do
+            if [[ -n "$dir" ]]; then  
+              uv run tools/process_html.py "$dir"
+            fi
+          done <<< "${{ env.CHANGED_DIRS }}"
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add _posts/
+          git commit -m "Update LaTeX HTML for ${{ env.CHANGED_DIRS }}"
+          git push
